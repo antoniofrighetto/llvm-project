@@ -2906,6 +2906,9 @@ bool AArch64InstructionSelector::select(MachineInstr &I) {
       } else {
         static constexpr unsigned Opcodes[] = {AArch64::STLRB, AArch64::STLRH,
                                                AArch64::STLRW, AArch64::STLRX};
+        static constexpr unsigned OpcodesUnscaled[] = {
+            AArch64::STLURBi, AArch64::STLURHi, AArch64::STLURWi,
+            AArch64::STLURXi};
         Register ValReg = LdSt.getReg(0);
         if (MRI.getType(ValReg).getSizeInBits() == 64 && MemSizeInBits != 64) {
           // Emit a subreg copy of 32 bits.
@@ -2913,6 +2916,20 @@ bool AArch64InstructionSelector::select(MachineInstr &I) {
           MIB.buildInstr(TargetOpcode::COPY, {NewVal}, {})
               .addReg(I.getOperand(0).getReg(), 0, AArch64::sub_32);
           I.getOperand(0).setReg(NewVal);
+        }
+        if (STI.hasRCPC_IMMO()) {
+          auto AddrModeFns =
+              selectAddrModeUnscaled(I.getOperand(1), MemSizeInBytes);
+          if (AddrModeFns) {
+            auto NewStoreI = MIB.buildInstr(
+                OpcodesUnscaled[Log2_32(MemSizeInBytes)], {}, {}, I.getFlags());
+            NewStoreI.addUse(I.getOperand(0).getReg());
+            NewStoreI.cloneMemRefs(I);
+            for (const auto &Fn : *AddrModeFns)
+              Fn(NewStoreI);
+            I.eraseFromParent();
+            return constrainSelectedInstRegOperands(*NewStoreI, TII, TRI, RBI);
+          }
         }
         I.setDesc(TII.get(Opcodes[Log2_32(MemSizeInBytes)]));
       }
