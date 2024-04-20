@@ -14,6 +14,7 @@
 
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/DomTreeUpdater.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -543,15 +544,9 @@ void PruningFunctionCloner::CloneBlock(
       // If we can simplify this instruction to some other value, simply add
       // a mapping to that value rather than inserting a new instruction into
       // the basic block.
-      if (Value *V =
-              simplifyInstruction(NewInst, BB->getModule()->getDataLayout())) {
-        // On the off-chance that this simplifies to an instruction in the old
-        // function, map it back into the new function.
-        if (NewFunc != OldFunc)
-          if (Value *MappedV = VMap.lookup(V))
-            V = MappedV;
-
-        if (!NewInst->mayHaveSideEffects()) {
+      if (Value *V = ConstantFoldInstruction(
+              NewInst, BB->getModule()->getDataLayout())) {
+        if (wouldInstructionBeTriviallyDead(NewInst)) {
           VMap[&*II] = V;
           NewInst->eraseFromParent();
           continue;
