@@ -768,6 +768,9 @@ ConstraintTy ConstraintInfo::getConstraintForSolving(CmpInst::Predicate Pred,
       isKnownNonNegative(Op1, DL, /*Depth=*/MaxAnalysisRecursionDepth - 1))
     Pred = CmpInst::getUnsignedPredicate(Pred);
 
+  if (CmpInst::isSigned(Pred) && doesHold(CmpInst::ICMP_EQ, Op0, Op1))
+    Pred = CmpInst::getUnsignedPredicate(Pred);
+
   SmallVector<Value *> NewVariables;
   ConstraintTy R = getConstraint(Pred, Op0, Op1, NewVariables);
   if (!NewVariables.empty())
