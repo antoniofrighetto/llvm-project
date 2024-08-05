@@ -1870,8 +1870,7 @@ bool MemCpyOptPass::mayBeMemMoveMemSetDependency(MemMoveInst *M) {
 
   MemSetInst *MS = nullptr;
   if (auto *Def = dyn_cast<MemoryDef>(SourceClobber))
-    if (auto *I = dyn_cast<Instruction>(Def->getMemoryInst()))
-      MS = dyn_cast_or_null<MemSetInst>(I);
+    MS = dyn_cast_or_null<MemSetInst>(Def->getMemoryInst());
 
   if (!MS || MS->getParent() != M->getParent())
     return false;
