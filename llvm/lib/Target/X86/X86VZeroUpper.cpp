@@ -18,6 +18,7 @@
 #include "X86Subtarget.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -30,6 +31,7 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -286,6 +288,27 @@ bool VZeroUpperInserter::runOnMachineFunction(MachineFunction &MF) {
   const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
   if (!ST.hasAVX() || !ST.insertVZEROUPPER())
     return false;
+
+  const auto *M = MF.getFunction().getParent();
+  auto *Annotations = M->getNamedGlobal("llvm.global.annotations");
+  if (Annotations) {
+    const auto *CA = cast<ConstantArray>(Annotations->getInitializer());
+    for (Value *Op : CA->operands()) {
+      auto *CS = cast<ConstantStruct>(Op);
+      Value *MaybeFunction = CS->getOperand(0)->stripPointerCasts();
+      if (auto *F = dyn_cast<Function>(MaybeFunction)) {
+        if (F == &MF.getFunction()) {
+          auto *GV =
+              cast<GlobalVariable>(CS->getOperand(1)->stripPointerCasts());
+          StringRef AnnotationString;
+          getConstantStringInfo(GV, AnnotationString);
+          if (AnnotationString == "mno_vzeroupper")
+            return false;
+        }
+      }
+    }
+  }
+
   TII = ST.getInstrInfo();
   MachineRegisterInfo &MRI = MF.getRegInfo();
   EverMadeChange = false;
