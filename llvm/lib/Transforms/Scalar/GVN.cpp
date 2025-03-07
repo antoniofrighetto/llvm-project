@@ -112,9 +112,9 @@ static cl::opt<bool> GVNEnableLoadInLoopPRE("enable-load-in-loop-pre",
 static cl::opt<bool>
 GVNEnableSplitBackedgeInLoadPRE("enable-split-backedge-in-load-pre",
                                 cl::init(false));
-static cl::opt<bool> GVNEnableMemDep("enable-gvn-memdep", cl::init(true));
+static cl::opt<bool> GVNEnableMemDep("enable-gvn-memdep", cl::init(false));
 static cl::opt<bool> GVNEnableMemorySSA("enable-gvn-memoryssa",
-                                        cl::init(false));
+                                        cl::init(true));
 
 static cl::opt<uint32_t> MaxNumDeps(
     "gvn-max-num-deps", cl::Hidden, cl::init(100),
@@ -476,7 +476,28 @@ void GVNPass::ValueTable::add(Value *V, uint32_t num) {
     NumberingPhi[num] = PN;
 }
 
-uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
+// Include the incoming memory state into the hash of the expression for the
+// given instruction. If the incoming memory state is:
+// * LiveOnEntry, add the value number of the entry block,
+// * a MemoryPhi, add the value number of the basic block corresponding to that
+// MemoryPhi,
+// * a MemoryDef, add the value number of the memory setting instruction.
+void GVNPass::ValueTable::addMemoryStateToExp(Instruction *I, Expression &E) {
+  assert(MSSA && "addMemoryStateToExp should not be called without MemorySSA");
+  assert(MSSA->getMemoryAccess(I) && "Instruction does not access memory");
+  MemoryAccess *MA = MSSA->getSkipSelfWalker()->getClobberingMemoryAccess(I);
+
+  uint32_t N = 0;
+  if (isa<MemoryPhi>(MA))
+    N = lookupOrAdd(MA->getBlock(), true);
+  else if (MSSA->isLiveOnEntryDef(MA))
+    N = lookupOrAdd(&I->getFunction()->getEntryBlock(), true);
+  else
+    N = lookupOrAdd(cast<MemoryDef>(MA)->getMemoryInst(), true);
+  E.varargs.push_back(N);
+}
+
+uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C, bool FromMSE) {
   // FIXME: Currently the calls which may access the thread id may
   // be considered as not accessing the memory. But this is
   // problematic for coroutines, since coroutines may resume in a
@@ -485,6 +506,11 @@ uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
   // optimizations. Revert this one when we detect the memory
   // accessing kind more precisely.
   if (C->getFunction()->isPresplitCoroutine()) {
+    valueNumbering[C] = nextValueNumber;
+    return nextValueNumber++;
+  }
+
+  if (FromMSE) {
     valueNumbering[C] = nextValueNumber;
     return nextValueNumber++;
   }
@@ -596,8 +622,35 @@ uint32_t GVNPass::ValueTable::lookupOrAddCall(CallInst *C) {
     return V;
   }
 
+  if (MSSA && AA->onlyReadsMemory(C)) {
+    Expression exp = createExpr(C);
+    addMemoryStateToExp(C, exp);
+    uint32_t e = assignExpNewValueNum(exp).first;
+    valueNumbering[C] = e;
+    return e;
+  }
+
   valueNumbering[C] = nextValueNumber;
   return nextValueNumber++;
+}
+
+/// Returns the value number for the specified load or store instruction.
+uint32_t GVNPass::ValueTable::lookupOrAddLoadStore(Instruction *I,
+                                                   bool FromMSE) {
+  if (!MSSA || FromMSE) {
+    valueNumbering[I] = nextValueNumber;
+    return nextValueNumber++;
+  }
+
+  Expression E;
+  E.type = I->getType();
+  E.opcode = I->getOpcode();
+  for (Use &Op : I->operands())
+    E.varargs.push_back(lookupOrAdd(Op));
+  addMemoryStateToExp(I, E);
+  uint32_t N = assignExpNewValueNum(E).first;
+  valueNumbering[I] = N;
+  return N;
 }
 
 /// Returns true if a value number exists for the specified value.
@@ -607,10 +660,17 @@ bool GVNPass::ValueTable::exists(Value *V) const {
 
 /// lookup_or_add - Returns the value number for the specified value, assigning
 /// it a new number if it did not have one before.
-uint32_t GVNPass::ValueTable::lookupOrAdd(Value *V) {
+uint32_t GVNPass::ValueTable::lookupOrAdd(Value *V, bool FromMSE) {
   DenseMap<Value*, uint32_t>::iterator VI = valueNumbering.find(V);
   if (VI != valueNumbering.end())
     return VI->second;
+
+  if (FromMSE || isa<BasicBlock>(V)) {
+    valueNumbering[V] = nextValueNumber;
+    if (isa<BasicBlock>(V))
+      NumberingBB[nextValueNumber] = cast<BasicBlock>(V);
+    return nextValueNumber++;
+  }
 
   auto *I = dyn_cast<Instruction>(V);
   if (!I) {
@@ -674,6 +734,9 @@ uint32_t GVNPass::ValueTable::lookupOrAdd(Value *V) {
       valueNumbering[V] = nextValueNumber;
       NumberingPhi[nextValueNumber] = cast<PHINode>(V);
       return nextValueNumber++;
+    case Instruction::Load:
+    case Instruction::Store:
+      return lookupOrAddLoadStore(I);
     default:
       valueNumbering[V] = nextValueNumber;
       return nextValueNumber++;
@@ -711,6 +774,7 @@ void GVNPass::ValueTable::clear() {
   valueNumbering.clear();
   expressionNumbering.clear();
   NumberingPhi.clear();
+  NumberingBB.clear();
   PhiTranslateTable.clear();
   nextValueNumber = 1;
   Expressions.clear();
@@ -725,6 +789,8 @@ void GVNPass::ValueTable::erase(Value *V) {
   // If V is PHINode, V <--> value number is an one-to-one mapping.
   if (isa<PHINode>(V))
     NumberingPhi.erase(Num);
+  else if (isa<BasicBlock>(V))
+    NumberingBB.erase(Num);
 }
 
 /// verifyRemoved - Verify that the value is removed from all internal data
@@ -2228,11 +2294,8 @@ GVNPass::ValueTable::assignExpNewValueNum(Expression &Exp) {
   uint32_t &e = expressionNumbering[Exp];
   bool CreateNewValNum = !e;
   if (CreateNewValNum) {
-    Expressions.push_back(Exp);
-    if (ExprIdx.size() < nextValueNumber + 1)
-      ExprIdx.resize(nextValueNumber * 2);
     e = nextValueNumber;
-    ExprIdx[nextValueNumber++] = nextExprNumber++;
+    Expressions.insert({nextValueNumber++, Exp});
   }
   return {e, CreateNewValNum};
 }
@@ -2298,13 +2361,37 @@ bool GVNPass::ValueTable::areCallValsEqual(uint32_t Num, uint32_t NewNum,
 uint32_t GVNPass::ValueTable::phiTranslateImpl(const BasicBlock *Pred,
                                                const BasicBlock *PhiBlock,
                                                uint32_t Num, GVNPass &Gvn) {
+  // See if we can refine the value number by looking at the PN incoming value
+  // for the given predecessor.
   if (PHINode *PN = NumberingPhi[Num]) {
-    for (unsigned i = 0; i != PN->getNumIncomingValues(); ++i) {
-      if (PN->getParent() == PhiBlock && PN->getIncomingBlock(i) == Pred)
-        if (uint32_t TransVal = lookup(PN->getIncomingValue(i), false))
-          return TransVal;
-    }
+    if (PN->getParent() == PhiBlock)
+      for (unsigned i = 0; i != PN->getNumIncomingValues(); ++i)
+        if (PN->getIncomingBlock(i) == Pred)
+          if (uint32_t TransVal = lookup(PN->getIncomingValue(i), false))
+            return TransVal;
     return Num;
+  }
+
+  if (BasicBlock *BB = NumberingBB[Num]) {
+    assert(MSSA && "NumberingBB is non-empty only when using MemorySSA");
+    // Value numbers of basic blocks are used to represent memory state in
+    // load/store instructions and read-only function calls when said state is
+    // set by a MemoryPhi.
+    if (BB != PhiBlock)
+      return Num;
+    MemoryPhi *MPhi = MSSA->getMemoryAccess(BB);
+    for (unsigned i = 0, N = MPhi->getNumIncomingValues(); i != N; ++i) {
+      if (MPhi->getIncomingBlock(i) != Pred)
+        continue;
+      MemoryAccess *MA = MPhi->getIncomingValue(i);
+      if (auto *PredPhi = dyn_cast<MemoryPhi>(MA))
+        return lookupOrAdd(PredPhi->getBlock());
+      if (MSSA->isLiveOnEntryDef(MA))
+        return lookupOrAdd(&BB->getParent()->getEntryBlock());
+      return lookupOrAdd(cast<MemoryUseOrDef>(MA)->getMemoryInst());
+    }
+    llvm_unreachable(
+        "CFG/MemorySSA mismatch: predecessor not found among incoming blocks");
   }
 
   // If there is any value related with Num is defined in a BB other than
@@ -2313,9 +2400,9 @@ uint32_t GVNPass::ValueTable::phiTranslateImpl(const BasicBlock *Pred,
   if (!areAllValsInBB(Num, PhiBlock, Gvn))
     return Num;
 
-  if (Num >= ExprIdx.size() || ExprIdx[Num] == 0)
+  if (Num >= Expressions.size())
     return Num;
-  Expression Exp = Expressions[ExprIdx[Num]];
+  Expression Exp = Expressions.lookup(Num);
 
   for (unsigned I = 0; I < Exp.varargs.size(); I++) {
     // For InsertValue and ExtractValue, some varargs are index numbers
@@ -2741,7 +2828,8 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   ImplicitControlFlowTracking ImplicitCFT;
   ICF = &ImplicitCFT;
   this->LI = &LI;
-  VN.setMemDep(MD);
+  VN.setMemDep(MD, isMemDepEnabled());
+  VN.setMemorySSA(MSSA, isMemorySSAEnabled());
   ORE = RunORE;
   InvalidBlockRPONumbers = true;
   MemorySSAUpdater Updater(MSSA);
