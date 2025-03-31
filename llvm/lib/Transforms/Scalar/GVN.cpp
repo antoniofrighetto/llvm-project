@@ -2229,8 +2229,8 @@ GVNPass::ValueTable::assignExpNewValueNum(Expression &Exp) {
   bool CreateNewValNum = !e;
   if (CreateNewValNum) {
     Expressions.push_back(Exp);
-    if (ExprIdx.size() < nextValueNumber + 1)
-      ExprIdx.resize(nextValueNumber * 2);
+    if (ExprIdx.capacity() < nextValueNumber + 1)
+      ExprIdx.resize((nextValueNumber * 3) / 2);
     e = nextValueNumber;
     ExprIdx[nextValueNumber++] = nextExprNumber++;
   }
