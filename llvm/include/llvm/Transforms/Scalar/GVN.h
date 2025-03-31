@@ -213,6 +213,9 @@ public:
     bool exists(Value *V) const;
     void add(Value *V, uint32_t num);
     void clear();
+    void reserve() {
+      ExprIdx.reserve(512);
+    }
     void erase(Value *v);
     void setAliasAnalysis(AAResults *A) { AA = A; }
     AAResults *getAliasAnalysis() const { return AA; }

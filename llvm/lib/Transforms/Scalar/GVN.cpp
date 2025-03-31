@@ -2229,7 +2229,7 @@ GVNPass::ValueTable::assignExpNewValueNum(Expression &Exp) {
   bool CreateNewValNum = !e;
   if (CreateNewValNum) {
     Expressions.push_back(Exp);
-    if (ExprIdx.size() < nextValueNumber + 1)
+    if (ExprIdx.capacity() < nextValueNumber + 1)
       ExprIdx.resize(nextValueNumber * 2);
     e = nextValueNumber;
     ExprIdx[nextValueNumber++] = nextExprNumber++;
@@ -3137,6 +3137,7 @@ bool GVNPass::splitCriticalEdges() {
 /// Executes one iteration of GVN
 bool GVNPass::iterateOnFunction(Function &F) {
   cleanupGlobalSets();
+  VN.reserve();
 
   // Top-down walk of the dominator tree
   bool Changed = false;
