@@ -1332,19 +1332,16 @@ struct DSEState {
 
       MemoryAccess *UseAccess = WorkList[I];
       if (isa<MemoryPhi>(UseAccess)) {
-        // AliasAnalysis does not account for loops. Limit elimination to
-        // candidates for which we can guarantee they always store to the same
-        // memory location.
-        if (!isGuaranteedLoopInvariant(DefLoc.Ptr))
-          return false;
-
+        Visited.insert(Def);
         pushMemUses(cast<MemoryPhi>(UseAccess), WorkList, Visited);
         continue;
       }
+
       // TODO: Checking for aliasing is expensive. Consider reducing the amount
       // of times this is called and/or caching it.
       Instruction *UseInst = cast<MemoryUseOrDef>(UseAccess)->getMemoryInst();
-      if (isReadClobber(DefLoc, UseInst)) {
+      if (isReadClobber(DefLoc, UseInst) &&
+          !mayBeDeadStoreInLoopDependence(Def->getMemoryInst(), UseInst)) {
         LLVM_DEBUG(dbgs() << "  ... hit read clobber " << *UseInst << ".\n");
         return false;
       }
@@ -1427,6 +1424,39 @@ struct DSEState {
         return false;
 
     return isRefSet(BatchAA.getModRefInfo(UseInst, DefLoc));
+  }
+
+  bool mayBeDeadStoreInLoopDependence(const Instruction *MaybeDeadI,
+                                      Instruction *UseI) {
+    auto *CurrentBB = MaybeDeadI->getParent();
+    if (ContainsIrreducibleLoops || !isa<StoreInst>(MaybeDeadI) ||
+        !isa<LoadInst>(UseI) || CurrentBB != UseI->getParent() ||
+        !LI.getLoopFor(MaybeDeadI->getParent()))
+      return false;
+    // We know `UseI` reads from the memory location of `MaybeDeadI` from
+    // previous AA results, thus, either there is a loop-carried or a
+    // loop-independent dependence here. It should suffice to visit the
+    // transitive closure of the uses of `UseI`, checking if any of them escapes
+    // the loop body. Any pointer use should be caught while visiting
+    // MemoryAccesses.
+    SmallSetVector<Instruction *, 16> WorkList;
+    WorkList.insert(UseI);
+
+    while (!WorkList.empty()) {
+      auto *I = WorkList.pop_back_val();
+      if (I->hasNUsesOrMore(3))
+        return false;
+
+      for (Use &U : I->uses()) {
+        auto *User = cast<Instruction>(U.getUser());
+        if (User->getParent() != CurrentBB || isa<CallBase>(User))
+          return false;
+        if (User == MaybeDeadI)
+          continue;
+        WorkList.insert(User);
+      }
+    }
+    return true;
   }
 
   /// Returns true if a dependency between \p Current and \p KillingDef is
