@@ -621,7 +621,7 @@ SCRUB_TAILING_COMMENT_TOKEN_RE = re.compile(r"(?<=\S)+[ \t]*#$", flags=re.M)
 
 SEPARATOR = "."
 
-METADATA_NODES_RE = re.compile(r"^\s*!(\d+)\s*=\s*!{(.*)}", re.M)
+METADATA_NODES_RE = re.compile(r"^\s*!(\d+)\s*=\s*!\{(.*)\}", re.M)
 TBAA_TAGS_RE = re.compile(r"!tbaa\s*!([0-9]+)")
 
 
