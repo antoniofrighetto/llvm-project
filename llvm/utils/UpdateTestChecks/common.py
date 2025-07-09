@@ -621,8 +621,8 @@ SCRUB_TAILING_COMMENT_TOKEN_RE = re.compile(r"(?<=\S)+[ \t]*#$", flags=re.M)
 
 SEPARATOR = "."
 
-METADATA_NODES_RE = re.compile(r'^\s*!(\d+)\s*=\s*!{(.*)}', re.M)
-TBAA_TAGS_RE = re.compile(r'!tbaa\s*!([0-9]+)')
+METADATA_NODES_RE = re.compile(r"^\s*!(\d+)\s*=\s*!{(.*)}", re.M)
+TBAA_TAGS_RE = re.compile(r"!tbaa\s*!([0-9]+)")
 
 
 def error(msg, test_file=None):
@@ -694,13 +694,13 @@ def get_tbaa_records(version, raw_output_tools):
         return {}
 
     # Retrieve all unique tbaa tags for the given IR.
-    unique_tbaa_tags = {f'!{n}' for n in TBAA_TAGS_RE.findall(raw_output_tools)}
+    unique_tbaa_tags = {f"!{n}" for n in TBAA_TAGS_RE.findall(raw_output_tools)}
     if not unique_tbaa_tags:
         return {}
 
     # Small dict of metadata ID and its node content as value.
     md_nodes = {
-        f'!{m.group(1)}': m.group(2)
+        f"!{m.group(1)}": m.group(2)
         for m in METADATA_NODES_RE.finditer(raw_output_tools)
     }
     assert md_nodes, "Shouldn't have TBAA tags without their type descriptors."
@@ -711,14 +711,15 @@ def get_tbaa_records(version, raw_output_tools):
         assert type_desc, f"Expected type descriptor for node {tag}."
 
         # We deal with a tag of kind `(BaseTy, AccessTy, Offset)`.
-        access_ty = type_desc.split(',')[1].strip()
+        access_ty = type_desc.split(",")[1].strip()
 
         parent_ty = md_nodes.get(access_ty)
         assert parent_ty, f"Couldn't find metadata for access type {access_ty}."
 
-        ty_name_field = parent_ty.split(',')[0]
-        assert ty_name_field.startswith('!"') and ty_name_field.endswith('"'), \
-            "First operand should be a MDString."
+        ty_name_field = parent_ty.split(",")[0]
+        assert ty_name_field.startswith('!"') and ty_name_field.endswith(
+            '"'
+        ), "First operand should be a MDString."
         ty_name = ty_name_field[2:-1]
 
         if ty_name.startswith("p"):
@@ -736,7 +737,7 @@ def get_tbaa_records(version, raw_output_tools):
             tbaa_prefix = ty_name.replace(" ", "_")
 
         # Record tag node and its semantics (e.g., INT_TBAA, INTPTR_TBAA).
-        tbaa_sema = f'{tbaa_prefix.upper()}_TBAA'
+        tbaa_sema = f"{tbaa_prefix.upper()}_TBAA"
         result[tag] = tbaa_sema
 
     return result
@@ -1832,7 +1833,7 @@ def generalize_check_lines(
     ginfo: GeneralizerInfo,
     vars_seen,
     global_vars_seen,
-    global_tbaa_records = {},
+    global_tbaa_records={},
     preserve_names=False,
     original_check_lines=None,
     *,
@@ -1998,8 +1999,12 @@ def generalize_check_lines(
                 # We have computed the name mapping. Now, if possible,
                 # substitute the TBAA value name with its semantics.
                 if ginfo.get_version() >= 6:
-                    if value.key == "!" and global_tbaa_records \
-                        and mapped_name.startswith("TBAA") and mapped_name[4:].isdigit():
+                    if (
+                        value.key == "!"
+                        and global_tbaa_records
+                        and mapped_name.startswith("TBAA")
+                        and mapped_name[4:].isdigit()
+                    ):
                         tbaa_sema = global_tbaa_records.get(value.text)
                         assert tbaa_sema, f"Shouldn't miss TBAA name for {value.text}?"
                         mapped_name = f"{tbaa_sema}{mapped_name[4:]}"
@@ -2037,7 +2042,7 @@ def add_checks(
     ginfo,
     global_vars_seen_dict,
     is_filtered,
-    global_tbaa_records_for_prefixes = {},
+    global_tbaa_records_for_prefixes={},
     preserve_names=False,
     original_check_lines: Mapping[str, List[str]] = {},
 ):
@@ -2089,8 +2094,12 @@ def add_checks(
 
             global_vars_seen_before = [key for key in global_vars_seen.keys()]
             global_tbaa_records = next(
-                (val for key, val in global_tbaa_records_for_prefixes.items() if checkprefix in key),
-                None
+                (
+                    val
+                    for key, val in global_tbaa_records_for_prefixes.items()
+                    if checkprefix in key
+                ),
+                None,
             )
 
             vars_seen = {}
@@ -2739,8 +2748,12 @@ def add_global_checks(
                 check_lines = []
                 global_vars_seen_before = [key for key in global_vars_seen.keys()]
                 global_tbaa_records = next(
-                    (val for key, val in global_tbaa_records_for_prefixes.items() if checkprefix in key),
-                    None
+                    (
+                        val
+                        for key, val in global_tbaa_records_for_prefixes.items()
+                        if checkprefix in key
+                    ),
+                    None,
                 )
 
                 lines_w_index = glob_val_dict[checkprefix][nameless_value.check_prefix]
