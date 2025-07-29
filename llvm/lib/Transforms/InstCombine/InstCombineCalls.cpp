@@ -1540,7 +1540,7 @@ static Value *foldBinaryIntrinsicRecurrence(InstCombinerImpl &IC,
   // A binary intrinsic recurrence with loop-invariant operands is equivalent to
   // `call @llvm.binary.intrinsic(Init, OtherOp)`.
   if (!matchSimpleBinaryIntrinsicRecurrence(II, PN, Init, OtherOp) ||
-      !IC.getDominatorTree().dominates(OtherOp, PN))
+      !PN->hasOneUse() || !IC.getDominatorTree().dominates(OtherOp, PN))
     return nullptr;
 
   auto IID = II->getIntrinsicID();
