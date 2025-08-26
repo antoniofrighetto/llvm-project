@@ -930,9 +930,7 @@ Instruction *InstCombinerImpl::foldAddWithConstant(BinaryOperator &Add) {
     if (Add.hasNoSignedWrap() || Add.hasNoUnsignedWrap())
       return BinaryOperator::CreateOr(Op0, Op1);
 
-    // If wrapping is allowed, then the addition flips the sign bit of LHS:
-    // X + (signmask) --> X ^ signmask
-    return BinaryOperator::CreateXor(Op0, Op1);
+    return nullptr;
   }
 
   // Is this add the last step in a convoluted sext?

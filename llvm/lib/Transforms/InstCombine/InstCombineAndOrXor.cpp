@@ -5487,5 +5487,8 @@ Instruction *InstCombinerImpl::visitXor(BinaryOperator &I) {
   if (Instruction *Res = foldBitwiseLogicWithIntrinsics(I, Builder))
     return Res;
 
+  if (match(Op1, m_SignMask()))
+    return BinaryOperator::CreateSub(Op0, Op1);
+
   return nullptr;
 }
