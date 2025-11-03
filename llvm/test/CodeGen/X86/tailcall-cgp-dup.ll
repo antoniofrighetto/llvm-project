@@ -415,6 +415,154 @@ return:
   ret i32 %phi
 }
 
+define i32 @may_be_duplicated_for_tailc(i1 %c) nounwind {
+; OPT-LABEL: @may_be_duplicated_for_tailc(
+; OPT-NEXT:  entry:
+; OPT-NEXT:    [[C_FR:%.*]] = freeze i1 [[C:%.*]]
+; OPT-NEXT:    br i1 [[C_FR]], label [[IF_THEN:%.*]], label [[RETURN:%.*]]
+; OPT:       if.then:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @qux()
+; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
+; OPT-NEXT:    ret i32 [[RV]]
+; OPT:       return:
+; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @qux()
+; OPT-NEXT:    ret i32 [[TMP1]]
+;
+; CHECK-LABEL: may_be_duplicated_for_tailc:
+; CHECK:       ## %bb.0: ## %entry
+; CHECK-NEXT:    testb $1, %dil
+; CHECK-NEXT:    je _qux ## TAILCALL
+; CHECK-NEXT:  ## %bb.1: ## %if.then
+; CHECK-NEXT:    pushq %rbx
+; CHECK-NEXT:    callq _qux
+; CHECK-NEXT:    movl %eax, %ebx
+; CHECK-NEXT:    callq _quux
+; CHECK-NEXT:    movl %ebx, %eax
+; CHECK-NEXT:    popq %rbx
+; CHECK-NEXT:    retq
+entry:
+  %rv = tail call i32 @qux()
+  br i1 %c, label %if.then, label %return
+
+if.then:
+  tail call i32 @quux()
+  br label %return
+
+return:
+  ret i32 %rv
+}
+
+define i32 @may_be_duplicated_for_tailc_2(i1 noundef %c, ptr %p) nounwind {
+; OPT-LABEL: @may_be_duplicated_for_tailc_2(
+; OPT-NEXT:  entry:
+; OPT-NEXT:    store i32 0, ptr [[P:%.*]], align 4
+; OPT-NEXT:    br i1 [[C:%.*]], label [[RETURN:%.*]], label [[IF_THEN:%.*]]
+; OPT:       if.then:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @baz(ptr [[P]], ptr null)
+; OPT-NEXT:    store i32 1, ptr [[P]], align 4
+; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
+; OPT-NEXT:    ret i32 [[RV]]
+; OPT:       return:
+; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @baz(ptr [[P]], ptr null)
+; OPT-NEXT:    ret i32 [[TMP1]]
+;
+; CHECK-LABEL: may_be_duplicated_for_tailc_2:
+; CHECK:       ## %bb.0: ## %entry
+; CHECK-NEXT:    pushq %rbp
+; CHECK-NEXT:    pushq %rbx
+; CHECK-NEXT:    pushq %rax
+; CHECK-NEXT:    movq %rsi, %rbx
+; CHECK-NEXT:    movl $0, (%rsi)
+; CHECK-NEXT:    testb $1, %dil
+; CHECK-NEXT:    je LBB13_1
+; CHECK-NEXT:  ## %bb.2: ## %return
+; CHECK-NEXT:    movq %rbx, %rdi
+; CHECK-NEXT:    xorl %esi, %esi
+; CHECK-NEXT:    addq $8, %rsp
+; CHECK-NEXT:    popq %rbx
+; CHECK-NEXT:    popq %rbp
+; CHECK-NEXT:    jmp _baz ## TAILCALL
+; CHECK-NEXT:  LBB13_1: ## %if.then
+; CHECK-NEXT:    movq %rbx, %rdi
+; CHECK-NEXT:    xorl %esi, %esi
+; CHECK-NEXT:    callq _baz
+; CHECK-NEXT:    movl %eax, %ebp
+; CHECK-NEXT:    movl $1, (%rbx)
+; CHECK-NEXT:    callq _quux
+; CHECK-NEXT:    movl %ebp, %eax
+; CHECK-NEXT:    addq $8, %rsp
+; CHECK-NEXT:    popq %rbx
+; CHECK-NEXT:    popq %rbp
+; CHECK-NEXT:    retq
+entry:
+  store i32 0, ptr %p
+  %rv = tail call i32 @baz(ptr %p, ptr null)
+  br i1 %c, label %return, label %if.then
+
+if.then:
+  store i32 1, ptr %p
+  tail call i32 @quux()
+  br label %return
+
+return:
+  ret i32 %rv
+}
+
+; Negative tests for duplicate for tail call.
+
+define i32 @duplicated_for_tailc_illegal(i1 noundef %c) {
+; OPT-LABEL: @duplicated_for_tailc_illegal(
+; OPT-NEXT:  entry:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @qux()
+; OPT-NEXT:    br i1 [[C:%.*]], label [[NEXT:%.*]], label [[IF_THEN:%.*]]
+; OPT:       next:
+; OPT-NEXT:    br i1 [[C]], label [[IF_THEN]], label [[RETURN:%.*]]
+; OPT:       if.then:
+; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
+; OPT-NEXT:    br label [[RETURN]]
+; OPT:       return:
+; OPT-NEXT:    ret i32 [[RV]]
+;
+entry:
+  %rv = tail call i32 @qux()
+  br i1 %c, label %next, label %if.then
+
+next:
+  br i1 %c, label %if.then, label %return
+
+if.then:
+  tail call i32 @quux()
+  br label %return
+
+return:
+  ret i32 %rv
+}
+
+define i32 @duplicated_for_tailc_illegal_2(i1 noundef %c, ptr %p) {
+; OPT-LABEL: @duplicated_for_tailc_illegal_2(
+; OPT-NEXT:  entry:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @baz(ptr [[P:%.*]], ptr null)
+; OPT-NEXT:    store i32 0, ptr [[P]], align 4
+; OPT-NEXT:    br i1 [[C:%.*]], label [[IF_THEN:%.*]], label [[RETURN:%.*]]
+; OPT:       if.then:
+; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
+; OPT-NEXT:    br label [[RETURN]]
+; OPT:       return:
+; OPT-NEXT:    ret i32 [[RV]]
+;
+entry:
+  %rv = tail call i32 @baz(ptr %p, ptr null)
+  store i32 0, ptr %p
+  br i1 %c, label %if.then, label %return
+
+if.then:
+  tail call i32 @quux()
+  br label %return
+
+return:
+  ret i32 %rv
+}
+
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1)
 declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1)
 declare noalias ptr @malloc(i64)

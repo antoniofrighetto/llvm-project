@@ -2912,8 +2912,9 @@ static bool isIntrinsicOrLFToBeTailCalled(const TargetLibraryInfo *TLInfo,
 
 /// Look for opportunities to duplicate return instructions to the predecessor
 /// to enable tail call optimizations. The case it is currently looking for is
-/// the following one. Known intrinsics or library function that may be tail
-/// called are taken into account as well.
+/// primarily the following one. In some cases, duplicating a function call to
+/// enable TCO in one block is allowed. Known intrinsics or library function
+/// that may be tail called are taken into account as well.
 /// @code
 /// bb0:
 ///   %tmp0 = tail call i32 @f0()
@@ -3016,10 +3017,12 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
   if (&*BI != RetI)
     return false;
 
-  /// Only dup the ReturnInst if the CallInst is likely to be emitted as a tail
-  /// call.
-  const Function *F = BB->getParent();
-  SmallVector<BasicBlock *, 4> TailCallBBs;
+  auto mayBePermittedAsTailCall = [&](const auto *CI) {
+    return TLI->mayBeEmittedAsTailCall(CI) &&
+           attributesPermitTailCall(BB->getParent(), CI, RetI, *TLI);
+  };
+
+  SmallVector<BasicBlock *, 4> RetToDuplicateBBs;
   // Record the call instructions so we can insert any fake uses
   // that need to be preserved before them.
   SmallVector<CallInst *, 4> CallInsts;
@@ -3031,9 +3034,8 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
       BasicBlock *PredBB = PN->getIncomingBlock(I);
       // Make sure the phi value is indeed produced by the tail call.
       if (CI && CI->hasOneUse() && CI->getParent() == PredBB &&
-          TLI->mayBeEmittedAsTailCall(CI) &&
-          attributesPermitTailCall(F, CI, RetI, *TLI)) {
-        TailCallBBs.push_back(PredBB);
+          mayBePermittedAsTailCall(CI)) {
+        RetToDuplicateBBs.push_back(PredBB);
         CallInsts.push_back(CI);
       } else {
         // Consider the cases in which the phi value is indirectly produced by
@@ -3053,9 +3055,8 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
         if (CI && CI->use_empty() &&
             isIntrinsicOrLFToBeTailCalled(TLInfo, CI) &&
             IncomingVal == CI->getArgOperand(0) &&
-            TLI->mayBeEmittedAsTailCall(CI) &&
-            attributesPermitTailCall(F, CI, RetI, *TLI)) {
-          TailCallBBs.push_back(PredBB);
+            mayBePermittedAsTailCall(CI)) {
+          RetToDuplicateBBs.push_back(PredBB);
           CallInsts.push_back(CI);
         }
       }
@@ -3067,14 +3068,13 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
         continue;
       if (Instruction *I = Pred->rbegin()->getPrevNode()) {
         CallInst *CI = dyn_cast<CallInst>(I);
-        if (CI && CI->use_empty() && TLI->mayBeEmittedAsTailCall(CI) &&
-            attributesPermitTailCall(F, CI, RetI, *TLI)) {
+        if (CI && CI->use_empty() && mayBePermittedAsTailCall(CI)) {
           // Either we return void or the return value must be the first
           // argument of a known intrinsic or library function.
           if (!V || isa<UndefValue>(V) ||
               (isIntrinsicOrLFToBeTailCalled(TLInfo, CI) &&
                V == CI->getArgOperand(0))) {
-            TailCallBBs.push_back(Pred);
+            RetToDuplicateBBs.push_back(Pred);
             CallInsts.push_back(CI);
           }
         }
@@ -3083,22 +3083,85 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
   }
 
   bool Changed = false;
-  for (auto const &TailCallBB : TailCallBBs) {
+  BasicBlock *BBToSinkCall = nullptr;
+
+  // If we haven't found any tail call opportunity yet, but we know the return
+  // value of function call is being returned, then in triangle-like if/then it
+  // may be profitable to sink the call in one branch and duplicate it in the
+  // current return block, so that the duplicated call is in tail position.
+  if (auto *CI = dyn_cast_or_null<CallInst>(V);
+      CI && RetToDuplicateBBs.empty() && pred_size(BB) == 2) {
+    if (!CI->hasOneUse() || CI->cannotDuplicate() || CI->isConvergent() ||
+        !mayBePermittedAsTailCall(CI))
+      return Changed;
+
+    auto It = std::next(CI->getIterator());
+    while (isa<PseudoProbeInst>(It) || isLifetimeEndOrBitCastFor(&*It) ||
+           isFakeUse(&*It))
+      It = std::next(It);
+
+    // No instructions in between.
+    auto *CIBBTerm = CI->getParent()->getTerminator();
+    if (&*It != CIBBTerm)
+      return Changed;
+
+    auto *BI = dyn_cast<BranchInst>(CIBBTerm);
+    if (!BI || !BI->isConditional())
+      return Changed;
+
+    if (BI->getSuccessor(0) == BB)
+      BBToSinkCall = BI->getSuccessor(1);
+    else if (BI->getSuccessor(1) == BB)
+      BBToSinkCall = BI->getSuccessor(0);
+    else
+      return Changed;
+
+    // Maybe found a candidate block to sink the call into.
+    RetToDuplicateBBs.emplace_back(BBToSinkCall);
+  }
+
+  for (const auto &RetToDupBB : RetToDuplicateBBs) {
     // Make sure the call instruction is followed by an unconditional branch to
     // the return block.
-    BranchInst *BI = dyn_cast<BranchInst>(TailCallBB->getTerminator());
+    BranchInst *BI = dyn_cast<BranchInst>(RetToDupBB->getTerminator());
     if (!BI || !BI->isUnconditional() || BI->getSuccessor(0) != BB)
       continue;
 
-    // Duplicate the return into TailCallBB.
-    (void)FoldReturnIntoUncondBranch(RetI, BB, TailCallBB);
+    // Duplicate the return into RetToDupBB.
+    (void)FoldReturnIntoUncondBranch(RetI, BB, RetToDupBB);
     assert(!VerifyBFIUpdates ||
-           BFI->getBlockFreq(BB) >= BFI->getBlockFreq(TailCallBB));
+           BFI->getBlockFreq(BB) >= BFI->getBlockFreq(RetToDupBB));
     BFI->setBlockFreq(BB,
-                      (BFI->getBlockFreq(BB) - BFI->getBlockFreq(TailCallBB)));
+                      (BFI->getBlockFreq(BB) - BFI->getBlockFreq(RetToDupBB)));
     ModifiedDT = ModifyDT::ModifyBBDT;
     Changed = true;
     ++NumRetsDup;
+  }
+
+  if (Changed && BBToSinkCall) {
+    // The return has been duplicated in one of its predecessor. Make sure the
+    // original call is sunk to such a predecessor, and duplicated in the
+    // original block that returns.
+    auto *OrigCI = dyn_cast<CallInst>(
+        cast<ReturnInst>(BBToSinkCall->getTerminator())->getReturnValue());
+    assert(OrigCI && "Expected call-site.");
+
+    auto *OrigCITerm = cast<BranchInst>(OrigCI->getParent()->getTerminator());
+    auto *Cond = OrigCITerm->getCondition();
+    if (!isGuaranteedNotToBeUndefOrPoison(Cond)) {
+      auto *FI = new FreezeInst(Cond, Cond->getName() + ".fr",
+                                OrigCITerm->getIterator());
+      OrigCITerm->setCondition(FI);
+      InsertedInsts.insert(FI);
+    }
+
+    OrigCI->moveBefore(BBToSinkCall->getFirstInsertionPt());
+    auto *ClonedCI = OrigCI->clone();
+    ClonedCI->setName(OrigCI->getName() + ".cloned");
+    ClonedCI->insertBefore(RetI->getIterator());
+    RetI->setOperand(0, ClonedCI);
+    InsertedInsts.insert(ClonedCI);
+    return Changed;
   }
 
   // If we eliminated all predecessors of the block, delete the block now.
