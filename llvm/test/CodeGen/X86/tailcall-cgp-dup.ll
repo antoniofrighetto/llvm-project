@@ -418,26 +418,26 @@ return:
 define i32 @may_be_duplicated_for_tailc(i1 %c) nounwind {
 ; OPT-LABEL: @may_be_duplicated_for_tailc(
 ; OPT-NEXT:  entry:
-; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @qux()
-; OPT-NEXT:    br i1 [[C_FR:%.*]], label [[IF_THEN:%.*]], label [[RETURN:%.*]]
+; OPT-NEXT:    [[C_FR:%.*]] = freeze i1 [[C:%.*]]
+; OPT-NEXT:    br i1 [[C_FR]], label [[IF_THEN:%.*]], label [[RETURN:%.*]]
 ; OPT:       if.then:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @qux()
 ; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
-; OPT-NEXT:    br label [[RETURN]]
+; OPT-NEXT:    ret i32 [[RV]]
 ; OPT:       return:
+; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @qux()
 ; OPT-NEXT:    ret i32 [[TMP1]]
 ;
 ; CHECK-LABEL: may_be_duplicated_for_tailc:
 ; CHECK:       ## %bb.0: ## %entry
-; CHECK-NEXT:    pushq %rbx
-; CHECK-NEXT:    movl %edi, %ebx
-; CHECK-NEXT:    callq _qux
-; CHECK-NEXT:    testb $1, %bl
-; CHECK-NEXT:    je LBB12_2
+; CHECK-NEXT:    testb $1, %dil
+; CHECK-NEXT:    je _qux ## TAILCALL
 ; CHECK-NEXT:  ## %bb.1: ## %if.then
+; CHECK-NEXT:    pushq %rbx
+; CHECK-NEXT:    callq _qux
 ; CHECK-NEXT:    movl %eax, %ebx
 ; CHECK-NEXT:    callq _quux
 ; CHECK-NEXT:    movl %ebx, %eax
-; CHECK-NEXT:  LBB12_2: ## %return
 ; CHECK-NEXT:    popq %rbx
 ; CHECK-NEXT:    retq
 entry:
@@ -456,13 +456,14 @@ define i32 @may_be_duplicated_for_tailc_2(i1 noundef %c, ptr %p) nounwind {
 ; OPT-LABEL: @may_be_duplicated_for_tailc_2(
 ; OPT-NEXT:  entry:
 ; OPT-NEXT:    store i32 0, ptr [[P:%.*]], align 4
-; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @baz(ptr [[P]], ptr null)
 ; OPT-NEXT:    br i1 [[C:%.*]], label [[RETURN:%.*]], label [[IF_THEN:%.*]]
 ; OPT:       if.then:
+; OPT-NEXT:    [[RV:%.*]] = tail call i32 @baz(ptr [[P]], ptr null)
 ; OPT-NEXT:    store i32 1, ptr [[P]], align 4
 ; OPT-NEXT:    [[TMP0:%.*]] = tail call i32 @quux()
-; OPT-NEXT:    br label [[RETURN]]
+; OPT-NEXT:    ret i32 [[RV]]
 ; OPT:       return:
+; OPT-NEXT:    [[TMP1:%.*]] = tail call i32 @baz(ptr [[P]], ptr null)
 ; OPT-NEXT:    ret i32 [[TMP1]]
 ;
 ; CHECK-LABEL: may_be_duplicated_for_tailc_2:
@@ -471,19 +472,24 @@ define i32 @may_be_duplicated_for_tailc_2(i1 noundef %c, ptr %p) nounwind {
 ; CHECK-NEXT:    pushq %rbx
 ; CHECK-NEXT:    pushq %rax
 ; CHECK-NEXT:    movq %rsi, %rbx
-; CHECK-NEXT:    movl %edi, %ebp
 ; CHECK-NEXT:    movl $0, (%rsi)
-; CHECK-NEXT:    movq %rsi, %rdi
+; CHECK-NEXT:    testb $1, %dil
+; CHECK-NEXT:    je LBB13_1
+; CHECK-NEXT:  ## %bb.2: ## %return
+; CHECK-NEXT:    movq %rbx, %rdi
+; CHECK-NEXT:    xorl %esi, %esi
+; CHECK-NEXT:    addq $8, %rsp
+; CHECK-NEXT:    popq %rbx
+; CHECK-NEXT:    popq %rbp
+; CHECK-NEXT:    jmp _baz ## TAILCALL
+; CHECK-NEXT:  LBB13_1: ## %if.then
+; CHECK-NEXT:    movq %rbx, %rdi
 ; CHECK-NEXT:    xorl %esi, %esi
 ; CHECK-NEXT:    callq _baz
-; CHECK-NEXT:    testb $1, %bpl
-; CHECK-NEXT:    jne LBB13_2
-; CHECK-NEXT:  ## %bb.1: ## %if.then
+; CHECK-NEXT:    movl %eax, %ebp
 ; CHECK-NEXT:    movl $1, (%rbx)
-; CHECK-NEXT:    movl %eax, %ebx
 ; CHECK-NEXT:    callq _quux
-; CHECK-NEXT:    movl %ebx, %eax
-; CHECK-NEXT:  LBB13_2: ## %return
+; CHECK-NEXT:    movl %ebp, %eax
 ; CHECK-NEXT:    addq $8, %rsp
 ; CHECK-NEXT:    popq %rbx
 ; CHECK-NEXT:    popq %rbp
