@@ -312,13 +312,13 @@ bool InstCombinerImpl::isDesirableIntType(unsigned BitWidth) const {
 /// order to open up more combining opportunities.
 bool InstCombinerImpl::shouldChangeType(unsigned FromWidth,
                                         unsigned ToWidth) const {
-  bool FromLegal = FromWidth == 1 || DL.isLegalInteger(FromWidth);
-  bool ToLegal = ToWidth == 1 || DL.isLegalInteger(ToWidth);
-
   // Convert to desirable widths even if they are not legal types.
   // Only shrink types, to prevent infinite loops.
   if (ToWidth < FromWidth && isDesirableIntType(ToWidth))
     return true;
+
+  bool FromLegal = FromWidth == 1 || DL.isLegalInteger(FromWidth);
+  bool ToLegal = ToWidth == 1 || DL.isLegalInteger(ToWidth);
 
   // If this is a legal or desiable integer from type, and the result would be
   // an illegal type, don't do the transformation.
