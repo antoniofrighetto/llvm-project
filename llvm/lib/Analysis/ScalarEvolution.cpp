@@ -155,7 +155,7 @@ static cl::opt<unsigned>
                             cl::desc("Maximum number of iterations SCEV will "
                                      "symbolically execute a constant "
                                      "derived loop"),
-                            cl::init(100));
+                            cl::init(1000));
 
 static cl::opt<bool, true> VerifySCEVOpt(
     "verify-scev", cl::Hidden, cl::location(VerifySCEV),
