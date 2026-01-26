@@ -1443,7 +1443,7 @@ bool MemCpyOptPass::performMemCpyToMemSetOptzn(MemCpyInst *MemCpy,
     if (!Offset)
       return false;
     // On positive offsets, the memcpy source is at a offset into the memset'd
-    // region. On negative offset, the copy starts at a offset prior to the
+    // region. On negative offsets, the copy starts at a offset prior to the
     // previously memset'd area, namely, we memcpy from a partially initialized
     // region.
     MOffset = *Offset;
@@ -1486,10 +1486,15 @@ bool MemCpyOptPass::performMemCpyToMemSetOptzn(MemCpyInst *MemCpy,
 
   IRBuilder<> Builder(MemCpy);
   Value *DestPtr = MemCpy->getRawDest();
-  if (MOffset < 0)
+  MaybeAlign Align = MemCpy->getDestAlign();
+  if (MOffset < 0) {
     DestPtr = Builder.CreatePtrAdd(DestPtr, Builder.getInt64(-MOffset));
-  Instruction *NewM = Builder.CreateMemSet(DestPtr, MemSet->getOperand(1),
-                                           CopySize, MemCpy->getDestAlign());
+    if (Align)
+      Align = commonAlignment(*Align, -MOffset);
+  }
+
+  Instruction *NewM =
+      Builder.CreateMemSet(DestPtr, MemSet->getOperand(1), CopySize, Align);
   auto *LastDef = cast<MemoryDef>(MSSA->getMemoryAccess(MemCpy));
   auto *NewAccess = MSSAU->createMemoryAccessAfter(NewM, nullptr, LastDef);
   MSSAU->insertDef(cast<MemoryDef>(NewAccess), /*RenameUses=*/true);
