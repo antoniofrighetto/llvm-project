@@ -6245,6 +6245,7 @@ Instruction *InstCombinerImpl::foldICmpEquality(ICmpInst &I) {
                          m_CombineAnd(m_Value(B), m_Unless(m_ImmConstant())))))
     return new ICmpInst(Pred, Builder.CreateXor(A, B), Cst);
 
+#if 0
   {
     // (icmp eq/ne (and (add/sub/xor X, P2), P2), P2)
     auto m_Matcher =
@@ -6269,6 +6270,7 @@ Instruction *InstCombinerImpl::foldICmpEquality(ICmpInst &I) {
                           *IsZero ? A
                                   : ConstantInt::getNullValue(A->getType()));
   }
+#endif
 
   if (auto *Res = foldICmpEqualityWithOffset(
           I, Builder, getSimplifyQuery().getWithInstruction(&I)))
