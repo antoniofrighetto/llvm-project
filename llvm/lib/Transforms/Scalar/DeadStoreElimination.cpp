@@ -32,6 +32,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -2153,19 +2154,14 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
   LLVM_DEBUG(dbgs() << "Trying to eliminate MemoryDefs whose value being "
                        "written is implied by a dominating condition\n");
 
-  // A small struct to record `*Ptr == Val` equality facts.
-  struct EqualityCond {
-    Value *Ptr;
-    Value *Val;
-    Instruction *LI;
-    EqualityCond(Value *Ptr, Value *Val, Instruction *LI)
-        : Ptr(Ptr), Val(Val), LI(LI) {}
-  };
+  using ConditionInfo = std::pair<Value *, Value *>;
+  using ScopedHTType = ScopedHashTable<ConditionInfo, Instruction *>;
 
-  // We maintain a stack of the active dominating conditions for a given node.
-  SmallVector<EqualityCond, 8> ActiveConditions;
+  // We maintain a scoped hash table of the active dominating conditions for a
+  // given node.
+  ScopedHTType ActiveConditions;
   auto GetDominatingCondition = [&](BasicBlock *BB)
-      -> std::optional<std::pair<EqualityCond, BasicBlock *>> {
+      -> std::optional<std::tuple<ConditionInfo, Instruction *, BasicBlock *>> {
     auto *BI = dyn_cast<BranchInst>(BB->getTerminator());
     if (!BI || !BI->isConditional())
       return std::nullopt;
@@ -2193,7 +2189,7 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
 
     unsigned ImpliedSuccIdx = (Pred == ICmpInst::ICMP_EQ) ? 0 : 1;
     BasicBlock *ImpliedSucc = BI->getSuccessor(ImpliedSuccIdx);
-    return {{EqualityCond(StorePtr, StoreVal, ICmpL), ImpliedSucc}};
+    return {{ConditionInfo(StorePtr, StoreVal), ICmpL, ImpliedSucc}};
   };
 
   using NodePredicate = std::function<void(DomTreeNode *, unsigned)>;
@@ -2213,17 +2209,15 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
         if (!SI || !SI->isUnordered())
           continue;
 
-        auto It = llvm::find_if(ActiveConditions, [&](const auto &C) {
-          return C.Ptr == SI->getPointerOperand() &&
-                 C.Val == SI->getValueOperand();
-        });
-        if (It == ActiveConditions.end())
+        Instruction *LI = ActiveConditions.lookup(
+            {SI->getPointerOperand(), SI->getValueOperand()});
+        if (!LI)
           continue;
 
         // Found a dominating condition that may imply the value being stored.
         // Make sure there does not exist any clobbering access between the
         // load and the potential redundant store.
-        MemoryAccess *LoadAccess = MSSA.getMemoryAccess(It->LI);
+        MemoryAccess *LoadAccess = MSSA.getMemoryAccess(LI);
         MemoryAccess *ClobberingAccess =
             MSSA.getSkipSelfWalker()->getClobberingMemoryAccess(Def, BatchAA);
         if (MSSA.dominates(ClobberingAccess, LoadAccess)) {
@@ -2240,23 +2234,22 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
     auto MaybeCondition = GetDominatingCondition(BB);
 
     for (DomTreeNode *Child : Node->children()) {
-      bool IsActive = false;
+      // RAII scope for the active conditions.
+      ScopedHTType::ScopeTy Scope(ActiveConditions);
       if (MaybeCondition) {
-        const auto &[Cond, ImpliedSucc] = *MaybeCondition;
+        const auto &[Cond, LI, ImpliedSucc] = *MaybeCondition;
         if (DT.dominates(BasicBlockEdge(BB, ImpliedSucc), Child->getBlock())) {
           // Found a condition that holds for this child, dominated by the
           // current node via the equality edge. Propagate the condition to
-          // the subchilds by pushing it onto the stack.
-          ActiveConditions.emplace_back(Cond);
-          IsActive = true;
+          // the subchilds by pushing it onto the table.
+          ActiveConditions.insert(Cond, LI);
         }
       }
 
-      // Recursively visit the children of this node. Upon returning, pop
-      // the no longer active condition before visiting any sibling nodes.
+      // Recursively visit the children of this node. Upon destruction, the no
+      // longer active condition before visiting any sibling nodes is popped
+      // from the active scope.
       VisitNode(Child, Depth + 1);
-      if (IsActive)
-        ActiveConditions.pop_back();
     }
   };
 
