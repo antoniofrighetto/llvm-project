@@ -2178,7 +2178,7 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
         !canReplacePointersIfEqual(StoreVal, ICmpL, DL))
       return std::nullopt;
 
-    unsigned ImpliedSuccIdx = (Pred == ICmpInst::ICMP_EQ) ? 0 : 1;
+    unsigned ImpliedSuccIdx = Pred == ICmpInst::ICMP_EQ ? 0 : 1;
     BasicBlock *ImpliedSucc = BI->getSuccessor(ImpliedSuccIdx);
     return {{ConditionInfo(StorePtr, StoreVal), ICmpL, ImpliedSucc}};
   };
@@ -2232,7 +2232,7 @@ bool DSEState::eliminateRedundantStoresViaDominatingConditions() {
         if (DT.dominates(BasicBlockEdge(BB, ImpliedSucc), Child->getBlock())) {
           // Found a condition that holds for this child, dominated by the
           // current node via the equality edge. Propagate the condition to
-          // the subchilds by pushing it onto the table.
+          // the children by pushing it onto the table.
           ActiveConditions.insert(Cond, LI);
         }
       }
