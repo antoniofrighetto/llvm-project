@@ -176,9 +176,9 @@ static cl::opt<bool> EnableInitializesImprovement(
     cl::desc("Enable the initializes attr improvement in DSE"));
 
 static cl::opt<unsigned> MaxDepthRecursion(
-    "dse-max-dom-cond-depth", cl::init(20), cl::Hidden,
-    cl::desc("Limit dominator tree depth for recursion while eliminating "
-             "redundant stores via dominating conditions"));
+    "dse-max-dom-cond-depth", cl::init(1024), cl::Hidden,
+    cl::desc("Max dominator tree recursion depth for eliminating redundant "
+             "stores via dominating conditions"));
 
 //===----------------------------------------------------------------------===//
 // Helper functions
