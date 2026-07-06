@@ -81,6 +81,7 @@ namespace {
 class AMDGPURewriteOutArguments : public FunctionPass {
 private:
   const DataLayout *DL = nullptr;
+  AAResults *AA = nullptr;
   MemoryDependenceResults *MDA = nullptr;
 
   Type *getStoredType(Value &Arg) const;
@@ -93,6 +94,7 @@ public:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MemoryDependenceWrapperPass>();
+    AU.addRequired<AAResultsWrapperPass>();
     FunctionPass::getAnalysisUsage(AU);
   }
 
@@ -105,6 +107,7 @@ public:
 INITIALIZE_PASS_BEGIN(AMDGPURewriteOutArguments, DEBUG_TYPE,
                       "AMDGPU Rewrite Out Arguments", false, false)
 INITIALIZE_PASS_DEPENDENCY(MemoryDependenceWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_END(AMDGPURewriteOutArguments, DEBUG_TYPE,
                     "AMDGPU Rewrite Out Arguments", false, false)
 
@@ -165,6 +168,32 @@ Type *AMDGPURewriteOutArguments::getOutArgumentType(Argument &Arg) const {
   return StoredType;
 }
 
+static StoreInst *findStoreForOutArgument(BasicBlock *BB, Argument *OutArg,
+                                          AAResults &AA) {
+  MemoryLocation ArgLoc = MemoryLocation::getBeforeOrAfter(OutArg);
+  for (Instruction &I : reverse(drop_end(*BB))) {
+    if (auto *Store = dyn_cast<StoreInst>(&I))
+      if (Store->getPointerOperand() == OutArg)
+        return Store;
+
+    if (auto *FI = dyn_cast<FenceInst>(&I))
+      if (FI->getOrdering() == AtomicOrdering::Release)
+        continue;
+
+    if (auto *LI = dyn_cast<LoadInst>(&I)) {
+      if (LI->isAtomic() &&
+          isStrongerThan(LI->getOrdering(), AtomicOrdering::Monotonic))
+        return nullptr;
+      continue;
+    }
+
+    if (I.mayWriteToMemory() && isModSet(AA.getModRefInfo(&I, ArgLoc)))
+      return nullptr;
+  }
+
+  return nullptr;
+}
+
 bool AMDGPURewriteOutArguments::doInitialization(Module &M) {
   DL = &M.getDataLayout();
   return false;
@@ -173,6 +202,8 @@ bool AMDGPURewriteOutArguments::doInitialization(Module &M) {
 bool AMDGPURewriteOutArguments::runOnFunction(Function &F) {
   if (skipFunction(F))
     return false;
+
+  AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
 
   // TODO: Could probably handle variadic functions.
   if (F.isVarArg() || F.hasStructRetAttr() ||
@@ -252,12 +283,7 @@ bool AMDGPURewriteOutArguments::runOnFunction(Function &F) {
       for (ReturnInst *RI : Returns) {
         BasicBlock *BB = RI->getParent();
 
-        MemDepResult Q = MDA->getPointerDependencyFrom(
-            MemoryLocation::getBeforeOrAfter(OutArg), true, BB->end(), BB, RI);
-        StoreInst *SI = nullptr;
-        if (Q.isDef())
-          SI = dyn_cast<StoreInst>(Q.getInst());
-
+        StoreInst *SI = findStoreForOutArgument(BB, OutArg, *AA);
         if (SI) {
           LLVM_DEBUG(dbgs() << "Found out argument store: " << *SI << '\n');
           ReplaceableStores.emplace_back(RI, SI);
