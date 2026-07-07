@@ -352,8 +352,6 @@ static Expected<std::string> readModuleTriple(BitstreamCursor &Stream) {
 
   SmallVector<uint64_t, 64> Record;
 
-  std::string Triple;
-
   // Read all the records for this module.
   while (true) {
     Expected<BitstreamEntry> MaybeEntry = Stream.advanceSkippingSubblocks();
@@ -366,7 +364,7 @@ static Expected<std::string> readModuleTriple(BitstreamCursor &Stream) {
     case BitstreamEntry::Error:
       return error("Malformed block");
     case BitstreamEntry::EndBlock:
-      return Triple;
+      return std::string();
     case BitstreamEntry::Record:
       // The interesting case.
       break;
@@ -382,8 +380,7 @@ static Expected<std::string> readModuleTriple(BitstreamCursor &Stream) {
       std::string S;
       if (convertToString(Record, 0, S))
         return error("Invalid triple record");
-      Triple = S;
-      break;
+      return S;
     }
     }
     Record.clear();
