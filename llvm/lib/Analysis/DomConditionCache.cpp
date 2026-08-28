@@ -16,12 +16,16 @@ static void findAffectedValues(Value *Cond,
   findValuesAffectedByCondition(Cond, /*IsAssume=*/false, InsertAffected);
 }
 
-void DomConditionCache::registerBranch(CondBrInst *BI) {
+void DomConditionCache::registerBranch(
+    CondBrInst *BI, SmallVectorImpl<Value *> *NewlyAffected) {
   SmallVector<Value *, 16> Affected;
   findAffectedValues(BI->getCondition(), Affected);
   for (Value *V : Affected) {
     auto &AV = AffectedValues[V];
-    if (!is_contained(AV, BI))
+    if (!is_contained(AV, BI)) {
       AV.push_back(BI);
+      if (NewlyAffected)
+        NewlyAffected->push_back(V);
+    }
   }
 }

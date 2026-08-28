@@ -4428,7 +4428,24 @@ Instruction *InstCombinerImpl::visitCondBrInst(CondBrInst &BI) {
     }
   }
 
-  DC.registerBranch(&BI);
+  SmallVector<Value *, 8> NewlyAffected;
+  DC.registerBranch(&BI, &NewlyAffected);
+  if (!NewlyAffected.empty()) {
+    BasicBlockEdge TrueEdge(BI.getParent(), BI.getSuccessor(0));
+    BasicBlockEdge FalseEdge(BI.getParent(), BI.getSuccessor(1));
+    SmallPtrSet<Instruction *, 8> Seen;
+    for (Value *V : NewlyAffected) {
+      for (User *U : V->users()) {
+        auto *UI = dyn_cast<Instruction>(U);
+        if (!UI || UI->getParent() == BI.getParent() || !Seen.insert(UI).second)
+          continue;
+        BasicBlock *UB = UI->getParent();
+        if (DT.dominates(TrueEdge, UB) || DT.dominates(FalseEdge, UB))
+          Worklist.add(UI);
+      }
+    }
+  }
+
   return nullptr;
 }
 

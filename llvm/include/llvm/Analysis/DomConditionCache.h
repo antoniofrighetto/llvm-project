@@ -34,7 +34,9 @@ private:
 
 public:
   /// Add a branch condition to the cache.
-  LLVM_ABI void registerBranch(CondBrInst *BI);
+  LLVM_ABI void
+  registerBranch(CondBrInst *BI,
+                 SmallVectorImpl<Value *> *NewlyAffected = nullptr);
 
   /// Remove a value from the cache, e.g. because it will be erased.
   void removeValue(Value *V) { AffectedValues.erase(V); }
