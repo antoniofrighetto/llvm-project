@@ -3783,6 +3783,7 @@ const SCEV *ScalarEvolution::getGEPExpr(GEPOperator *GEP,
   // getSCEV(Base)->getType() has the same address space as Base->getType()
   // because SCEV::getType() preserves the address space.
   GEPNoWrapFlags NW = GEP->getNoWrapFlags();
+  GEPNoWrapFlags OffsetNW = GEP->getNoWrapFlags();
   if (NW != GEPNoWrapFlags::none()) {
     // We'd like to propagate flags from the IR to the corresponding SCEV nodes,
     // but to do that, we have to ensure that said flag is valid in the entire
@@ -3790,20 +3791,30 @@ const SCEV *ScalarEvolution::getGEPExpr(GEPOperator *GEP,
     // TODO: non-instructions have global scope.  We might be able to prove
     // some global scope cases
     auto *GEPI = dyn_cast<Instruction>(GEP);
-    if (!GEPI || !isSCEVExprNeverPoison(GEPI))
-      NW = GEPNoWrapFlags::none();
+    if (!GEPI || !isSCEVExprNeverPoison(GEPI)) {
+      NW = OffsetNW = GEPNoWrapFlags::none();
+    } else if (!isGuaranteedToTransferExecutionTo(
+                   getDefiningScopeBound(IndexExprs), GEPI)) {
+      // The offset flags should not take into account the base pointer's
+      // defining scope, as the offset only depends on the indices. Thus,
+      // derive the scope bound for the offset flags from the index operands
+      // alone.
+      OffsetNW = GEPNoWrapFlags::none();
+    }
   }
 
-  return getGEPExpr(BaseExpr, IndexExprs, GEP->getSourceElementType(), NW);
+  return getGEPExpr(BaseExpr, IndexExprs, GEP->getSourceElementType(), NW,
+                    OffsetNW);
 }
 
 const SCEV *ScalarEvolution::getGEPExpr(SCEVUse BaseExpr,
                                         ArrayRef<SCEVUse> IndexExprs,
-                                        Type *SrcElementTy, GEPNoWrapFlags NW) {
+                                        Type *SrcElementTy, GEPNoWrapFlags NW,
+                                        GEPNoWrapFlags OffsetNW) {
   SCEV::NoWrapFlags OffsetWrap = SCEV::FlagAnyWrap;
-  if (NW.hasNoUnsignedSignedWrap())
+  if (OffsetNW.hasNoUnsignedSignedWrap())
     OffsetWrap = setFlags(OffsetWrap, SCEV::FlagNSW);
-  if (NW.hasNoUnsignedWrap())
+  if (OffsetNW.hasNoUnsignedWrap())
     OffsetWrap = setFlags(OffsetWrap, SCEV::FlagNUW);
 
   Type *CurTy = BaseExpr->getType();
