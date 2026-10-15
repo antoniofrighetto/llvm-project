@@ -4385,7 +4385,7 @@ public:
   // Always uses MemDep, ignoring -enable-gvn-memdep and -enable-gvn-memoryssa.
   explicit GVNLegacyPass(bool ScalarPRE = true)
       : FunctionPass(ID),
-        Impl(GVNOptions().setMemDep(true).setMemorySSA(false).setScalarPRE(
+        Impl(GVNOptions().setMemDep(false).setMemorySSA(true).setScalarPRE(
             ScalarPRE)) {
     initializeGVNLegacyPassPass(*PassRegistry::getPassRegistry());
   }
