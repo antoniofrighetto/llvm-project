@@ -115,7 +115,7 @@ defm : BoolField<"guard-widening-widen-branch-guards", "true",
 
 // GVN.cpp
 defm : OptionalBoolField<"enable-gvn-memdep", "">;
-defm : BoolField<"enable-gvn-memoryssa", "false", "">;
+defm : BoolField<"enable-gvn-memoryssa", "true", "">;
 defm : BoolField<"enable-load-in-loop-pre", "true", "">;
 defm : BoolField<"enable-load-pre", "true", "">;
 defm : BoolField<"enable-scalar-pre", "true", "">;

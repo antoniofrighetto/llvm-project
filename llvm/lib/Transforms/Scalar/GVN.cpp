@@ -4355,7 +4355,7 @@ public:
 
   explicit GVNLegacyPass(
       bool MemDepAnalysis = valueOr(ScalarOptions::Global.enable_gvn_memdep,
-                                    true),
+                                    false),
       bool MemSSAAnalysis = ScalarOptions::Global.enable_gvn_memoryssa,
       bool ScalarPRE = true)
       : FunctionPass(ID), Impl(GVNOptions()
@@ -4425,6 +4425,6 @@ INITIALIZE_PASS_END(GVNLegacyPass, "gvn", "Global Value Numbering", false, false
 FunctionPass *llvm::createGVNPass() { return new GVNLegacyPass(); }
 FunctionPass *llvm::createGVNPass(bool ScalarPRE) {
   const ScalarOptions &Opts = ScalarOptions::Global;
-  return new GVNLegacyPass(valueOr(Opts.enable_gvn_memdep, true),
+  return new GVNLegacyPass(valueOr(Opts.enable_gvn_memdep, false),
                            Opts.enable_gvn_memoryssa, ScalarPRE);
 }
