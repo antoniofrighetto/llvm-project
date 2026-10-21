@@ -363,6 +363,25 @@ private:
 
   using DependencyBlockSet = DenseMap<BasicBlock *, DependencyBlockInfo>;
 
+  DenseMap<LoadInst *, SmallVector<ReachingMemVal, 4>> ReachingCache;
+  DenseMap<const Value *, SmallVector<LoadInst *, 4>> ReachingReverse;
+
+  void invalidateReachingCache() {
+    ReachingCache.clear();
+    ReachingReverse.clear();
+  }
+
+  void invalidateReachingCacheFor(const Value *V) {
+    if (auto *L = dyn_cast<LoadInst>(V))
+      ReachingCache.erase(const_cast<LoadInst *>(L));
+    auto It = ReachingReverse.find(V);
+    if (It == ReachingReverse.end())
+      return;
+    for (LoadInst *L : It->second)
+      ReachingCache.erase(L);
+    ReachingReverse.erase(It);
+  }
+
   std::optional<GVNPassImpl::ReachingMemVal> scanMemoryAccessesUsers(
       const MemoryLocation &Loc, bool IsInvariantLoad, BasicBlock *BB,
       const SmallVectorImpl<MemoryAccess *> &ClobbersList, MemorySSA &MSSA,
@@ -1912,6 +1931,9 @@ void GVNPassImpl::eliminatePartiallyRedundantLoad(
     LoadInst *Load, AvailValInBlkVect &ValuesPerBlock,
     MapVector<BasicBlock *, Value *> &AvailableLoads,
     MapVector<BasicBlock *, LoadInst *> *CriticalEdgePredAndLoad) {
+  for (const auto &AvailableLoad : AvailableLoads)
+    invalidateReachingCacheFor(AvailableLoad.second);
+
   for (const auto &AvailableLoad : AvailableLoads) {
     BasicBlock *UnavailableBlock = AvailableLoad.first;
     Value *LoadPtr = AvailableLoad.second;
@@ -2510,6 +2532,7 @@ bool GVNPassImpl::processAssumeIntrinsic(AssumeInst *IntrinsicI) {
                               NewS->getParent(), MemorySSA::BeforeTerminator);
 
         MSSAU->insertDef(cast<MemoryDef>(NewDef), /*RenameUses=*/false);
+        invalidateReachingCache();
       }
     }
     if (isAssumeWithEmptyBundle(*IntrinsicI)) {
@@ -3123,8 +3146,29 @@ bool GVNPassImpl::processLoad(LoadInst *L) {
           ReachingMemVal::getClobber(L->getPointerOperand(), Dep.getInst());
   } else {
     SmallVector<ReachingMemVal, 8> MemVals;
-    if (!findReachingValuesForLoad(L, MemVals, *MSSAU->getMemorySSA(), *AA))
-      return false; // Too many dependencies.
+    auto It = ReachingCache.find(L);
+    if (It != ReachingCache.end()) {
+      if (It->second.empty())
+        return false;
+      MemVals.assign(It->second.begin(), It->second.end());
+    } else {
+      bool Success =
+          findReachingValuesForLoad(L, MemVals, *MSSAU->getMemorySSA(), *AA);
+      auto &Entry = ReachingCache[L];
+      Entry.clear();
+      if (Success) {
+        Entry.assign(MemVals.begin(), MemVals.end());
+        for (const ReachingMemVal &V : MemVals) {
+          if (V.Inst)
+            ReachingReverse[V.Inst].push_back(L);
+          if (V.Addr && isa<Instruction>(V.Addr))
+            ReachingReverse[V.Addr].push_back(L);
+        }
+        ReachingReverse[L->getPointerOperand()].push_back(L);
+      } else {
+        return false; // Too many dependencies.
+      }
+    }
     assert(MemVals.size() && "Expected at least an unknown value");
     if (MemVals.size() > 1 || MemVals[0].Block != L->getParent())
       return processNonLocalLoad(L, MemVals);
@@ -3845,6 +3889,7 @@ bool GVNPassImpl::run(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   VN.setAliasAnalysis(&RunAA);
   MD = RunMD;
   ImplicitControlFlowTracking ImplicitCFT;
+  invalidateReachingCache();
   ICF = &ImplicitCFT;
   this->LI = &LI;
   VN.setMemDep(MD);
@@ -4232,6 +4277,7 @@ void GVNPassImpl::cleanupGlobalSets() {
 }
 
 void GVNPassImpl::removeInstruction(Instruction *I) {
+  invalidateReachingCacheFor(I);
   VN.erase(I);
   if (MD) MD->removeInstruction(I);
   if (EA)
@@ -4324,6 +4370,7 @@ void GVNPassImpl::addDeadBlock(BasicBlock *BB) {
         continue;
       for (PHINode &Phi : B->phis()) {
         Phi.setIncomingValueForBlock(P, PoisonValue::get(Phi.getType()));
+        invalidateReachingCacheFor(&Phi);
         if (MD)
           MD->invalidateCachedPointerInfo(&Phi);
       }
