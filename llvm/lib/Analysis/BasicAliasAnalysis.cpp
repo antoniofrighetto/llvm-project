@@ -236,7 +236,25 @@ CaptureComponents EarliestEscapeAnalysis::getCapturesBefore(
     if (EarliestInst)
       Inst2Obj[EarliestInst].push_back(Object);
     Iter.first->second = {EarliestInst, Res};
+    LLVM_DEBUG({
+      dbgs() << "EEA: populate " << *Object << "\n       earliest = ";
+      if (EarliestInst)
+        dbgs() << *EarliestInst << " [in "
+               << EarliestInst->getParent()->getName() << "]";
+      else
+        dbgs() << "<none>";
+      dbgs() << "\n";
+    });
   }
+
+  LLVM_DEBUG({
+    dbgs() << "EEA: query " << *Object << "\n       before = ";
+    if (I)
+      dbgs() << *I << " [in " << I->getParent()->getName() << "]";
+    else
+      dbgs() << "<any>";
+    dbgs() << (Iter.second ? "  (miss)" : "  (hit)") << "\n";
+  });
 
   if (ReturnCaptures) {
     assert(!I && "Context instruction not supported if ReturnCaptures");
@@ -265,8 +283,11 @@ CaptureComponents EarliestEscapeAnalysis::getCapturesBefore(
 
     return !isPotentiallyReachable(CaptureInst, I, nullptr, &DT, LI, CI);
   };
-  if (IsNotCapturedBefore())
+  if (IsNotCapturedBefore()) {
+    LLVM_DEBUG(dbgs() << "       -> not captured before\n");
     return CaptureComponents::None;
+  }
+  LLVM_DEBUG(dbgs() << "       -> captured\n");
   return Iter.first->second.second.WithoutRet;
 }
 
